@@ -1,0 +1,48 @@
+// ===============================
+// PARAMETERS (from cell problems)
+// ===============================
+real A11 = 0.889838;   // <-- replace by computed value
+real A22 = 0.889868;   // <-- replace by computed value
+real A12 = -2.24125e-06;   // <-- replace by computed value
+real theta = 0.85; // <-- volume fraction |Y*|
+
+// 0.889838  -2.24125e-06 ]
+// [ -2.24125e-06  0.889868 
+
+
+
+func f = 1.0;
+
+// ===============================
+// MACROSCOPIC DOMAIN
+// ===============================
+mesh Th = square(50, 50);
+
+// ===============================
+// FINITE ELEMENT SPACE
+// ===============================
+fespace Vh(Th, P1);
+Vh u, v;
+
+// ===============================
+// HOMOGENIZED PROBLEM
+// ===============================
+problem homogenized(u, v)
+  = int2d(Th)(
+        A11*dx(u)*dx(v)
+      + A22*dy(u)*dy(v)
+      + A12*(dx(u)*dy(v) + dy(u)*dx(v))
+      + theta*u*v
+    )
+  - int2d(Th)(theta*f*v)
+  + on(1,2,3,4, u = 0);
+
+// ===============================
+// SOLVE
+// ===============================
+homogenized;
+
+// ===============================
+// OUTPUT
+// ===============================
+plot(u, fill=true, value=true, cmm="Homogenized solution");

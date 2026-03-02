@@ -1,0 +1,242 @@
+// =====================================================
+// PERIODIC HOMOGENIZATION WITH CORRECTOR ESTIMATE
+// =====================================================
+
+// -----------------------------------------------------
+// PARAMETERS
+// -----------------------------------------------------
+real r = 0.2;                 // hole radius (relative to cell)
+int ncell = 40;               // mesh for cell problem
+int[int] Nvals = [4,6,8,10];  // N = 1/eps
+int nTests = Nvals.n;
+
+real[int] epsVal(nTests);
+real[int] errL2(nTests);
+real[int] errH1(nTests);
+real[int] errH1corr(nTests);
+
+func f = 1.0;
+
+// =====================================================
+// 1. CELL PROBLEMS (TWO OF THEM)
+// =====================================================
+cout << "=== CELL PROBLEMS ===" << endl;
+
+border b(t=0,1){x=t;y=0;label=1;}
+border rgt(t=0,1){x=1;y=t;label=2;}
+border t(t=1,0){x=t;y=1;label=3;}
+border l(t=1,0){x=0;y=t;label=4;}
+
+border hole(t=0,2*pi){
+    x=0.5+r*cos(t);
+    y=0.5+r*sin(t);
+    label=5;
+}
+
+mesh ThCell = buildmesh(
+    b(ncell)+rgt(ncell)+t(ncell)+l(ncell)
+    + hole(-ncell)
+);
+
+fespace VhC(ThCell,P1,
+    periodic=[[1,x],[3,x],[2,y],[4,y]]);
+VhC w1,w2,v;
+
+// ---- Cell problem i = 1
+problem cell1(w1,v)
+    = int2d(ThCell)(dx(w1)*dx(v)+dy(w1)*dy(v))
+    + int2d(ThCell)(dx(v));
+
+// ---- Cell problem i = 2
+problem cell2(w2,v)
+    = int2d(ThCell)(dx(w2)*dx(v)+dy(w2)*dy(v))
+    + int2d(ThCell)(dy(v));
+
+cell1;
+cell2;
+
+// zero mean
+// w1 -= int2d(ThCell)(w1)/int2d(ThCell)(1.0);
+// w2 -= int2d(ThCell)(w2)/int2d(ThCell)(1.0);
+
+real meanw1 = int2d(ThCell)(w1) / int2d(ThCell)(1.0);
+real meanw2 = int2d(ThCell)(w2) / int2d(ThCell)(1.0);
+w1 = w1 - meanw1;
+w2 = w2 - meanw2;
+
+plot(ThCell, wait=1, cmm="Cell mesh");
+plot(w1, fill=true,wait= 1, value=true, cmm="Cell corrector w1");
+plot(w2, fill=true, wait=1, value=true, cmm="Cell corrector w2");
+
+
+// =====================================================
+// 2. HOMOGENIZED COEFFICIENT A*
+// =====================================================
+real area = int2d(ThCell)(1.0);
+real theta = area;
+
+real A11 = int2d(ThCell)((dx(w1)+1)^2 + dy(w1)^2)/area;
+real A22 = int2d(ThCell)(dx(w2)^2 + (dy(w2)+1)^2)/area;
+real A12 = int2d(ThCell)((dx(w1)+1)*dx(w2)
+                        + dy(w1)*(dy(w2)+1))/area;
+
+cout << "A* = " << endl;
+cout << A11 << "  " << A12 << endl;
+cout << A12 << "  " << A22 << endl;
+cout << "theta = " << theta << endl;
+
+// =====================================================
+// 3. HOMOGENIZED PROBLEM
+// =====================================================
+cout << "=== HOMOGENIZED PROBLEM ===" << endl;
+
+mesh Th0 = square(80,80);
+fespace Vh0(Th0,P1);
+Vh0 u0,v0;
+
+problem homog(u0,v0)
+    = int2d(Th0)(
+        A11*dx(u0)*dx(v0)
+      + A22*dy(u0)*dy(v0)
+      + A12*(dx(u0)*dy(v0)+dy(u0)*dx(v0))
+      + theta*u0*v0
+      )
+    - int2d(Th0)(theta*f*v0)
+    + on(1,2,3,4,u0=0);
+
+homog;
+plot(u0, fill=true, wait=1, value=true, cmm="Homogenized solution u0");
+// =====================================================
+// 4. EPSILON PROBLEMS + CORRECTOR
+// =====================================================
+cout << "=== CONVERGENCE STUDY ===" << endl;
+
+for(int k=0;k<nTests;k++)
+{
+    int N = Nvals[k];
+    real eps = 1.0/N;
+    epsVal[k] = eps;
+
+    cout << "N = " << N << "  eps = " << eps << endl;
+
+    // ---- Build perforated domain
+    mesh Th;
+    for(int i=0;i<N;i++)
+    for(int j=0;j<N;j++)
+    {
+        real x0=i*eps, y0=j*eps;
+
+        border B1(t=0,1){x=x0+eps*t;y=y0;label=10;}
+        border B2(t=0,1){x=x0+eps;y=y0+eps*t;label=10;}
+        border B3(t=1,0){x=x0+eps*t;y=y0+eps;label=10;}
+        border B4(t=1,0){x=x0;y=y0+eps*t;label=10;}
+
+        border H(t=0,2*pi){
+            x=x0+eps/2+r*eps*cos(t);
+            y=y0+eps/2+r*eps*sin(t);
+            label=20;
+        }
+
+        mesh Tloc = buildmesh(
+            B1(6)+B2(6)+B3(6)+B4(6)
+            + H(-6)
+        );
+
+        // Th = (i==0 && j==0) ? Tloc : Th + Tloc;
+        if(i==0 && j==0) {
+    Th = Tloc;
+} else {
+    Th = Th + Tloc;
+}
+    }
+
+    fespace VhE(Th,P1);
+    VhE ue,ve;
+
+    // ---- epsilon problem (CORRECT PDE)
+    problem epsProb(ue,ve)
+        = int2d(Th)(
+            dx(ue)*dx(ve)
+          + dy(ue)*dy(ve)
+          + ue*ve
+          )
+        - int2d(Th)(f*ve)
+        + on(10,ue=0);
+
+    epsProb;
+
+    // ---- interpolate homogenized solution
+    VhE u0i = u0(x,y);
+
+    // ---- build corrector
+    VhE w1i,w2i;
+    for(int i=0;i<Th.nv;i++)
+    {
+        real X = Th(i).x/eps - floor(Th(i).x/eps);
+        real Y = Th(i).y/eps - floor(Th(i).y/eps);
+        w1i[][i] = w1(X,Y);
+        w2i[][i] = w2(X,Y);
+    }
+
+    VhE ucorr =
+        u0i
+      + eps*( w1i*dx(u0i) + w2i*dy(u0i) );
+
+    // ---- errors
+    errL2[k] = sqrt(int2d(Th)((ue-u0i)^2));
+    errH1[k] = sqrt(int2d(Th)(
+        (ue-u0i)^2
+      + (dx(ue)-dx(u0i))^2
+      + (dy(ue)-dy(u0i))^2 ));
+
+    errH1corr[k] = sqrt(int2d(Th)(
+        (ue-ucorr)^2
+      + (dx(ue)-dx(ucorr))^2
+      + (dy(ue)-dy(ucorr))^2 ));
+
+    cout << "L2      = " << errL2[k] << endl;
+    cout << "H1      = " << errH1[k] << endl;
+    cout << "H1 corr = " << errH1corr[k] << endl;
+}
+
+// =====================================================
+// 5. CONVERGENCE RATES
+// =====================================================
+cout << "=== CONVERGENCE RATES ===" << endl;
+for(int k=1;k<nTests;k++)
+{
+    cout << "From eps=" << epsVal[k-1]
+         << " to " << epsVal[k] << endl;
+
+    cout << "L2 rate      = "
+         << log(errL2[k]/errL2[k-1])/
+            log(epsVal[k]/epsVal[k-1]) << endl;
+
+    cout << "H1 rate      = "
+         << log(errH1[k]/errH1[k-1])/
+            log(epsVal[k]/epsVal[k-1]) << endl;
+
+    cout << "H1 corr rate = "
+         << log(errH1corr[k]/errH1corr[k-1])/
+            log(epsVal[k]/epsVal[k-1]) << endl;
+}
+// =====================================================
+// SAVE CONVERGENCE DATA
+// =====================================================
+ofstream file("convergence_data1.txt");
+
+file << "# eps  errorL2  errorH1  errorH1corr" << endl;
+
+for(int k=0; k<nTests; k++)
+{
+    file << epsVal[k] << " "
+         << errL2[k] << " "
+         << errH1[k] << " "
+         << errH1corr[k] << endl;
+}
+
+// file.close();
+
+cout << "Convergence data saved to convergence_data1.txt" << endl;
+
+

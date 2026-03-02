@@ -1,0 +1,96 @@
+// ===============================
+// PARAMETERS
+// ===============================
+real r = 0.2;
+int n = 40;
+
+// ===============================
+// GEOMETRY
+// ===============================
+border bottom(t=0,1){x=t; y=0; label=1;}
+border right(t=0,1){x=1; y=t; label=1;}
+border top(t=1,0){x=t; y=1; label=1;}
+border left(t=1,0){x=0; y=t; label=1;}
+border hole(t=0,2*pi){
+    x = 0.5 + r*cos(t);
+    y = 0.5 + r*sin(t);
+    label = 2;
+}
+
+mesh Th = buildmesh(
+    bottom(n) + right(n) + top(n) + left(n)
+    + hole(-n)
+);
+
+// Plot mesh
+plot(Th, wait=true);
+
+// ===============================
+// FEM SPACE
+// ===============================
+fespace Vh(Th, P1);
+Vh w1, w2, v;
+
+// ===============================
+// CELL PROBLEMS (NEUMANN WITH REGULARIZATION)
+// ===============================
+real eta = 1e-10;
+
+problem cell1(w1, v)
+    = int2d(Th)(
+        dx(w1)*dx(v) + dy(w1)*dy(v)
+        + eta*w1*v
+    )
+    + int2d(Th)(
+        dx(v)
+    );
+
+problem cell2(w2, v)
+    = int2d(Th)(
+        dx(w2)*dx(v) + dy(w2)*dy(v)
+        + eta*w2*v
+    )
+    + int2d(Th)(
+        dy(v)
+    );
+
+// Solve cell problems
+cell1;
+cell2;
+
+// Plot solutions
+plot(w1, wait=true, fill=true, value=true);
+plot(w2, wait=true, fill=true, value=true);
+
+// ===============================
+// HOMOGENIZED MATRIX
+// ===============================
+real area = int2d(Th)(1.0);
+
+// Compute the effective coefficients
+real A11, A22, A12;
+A11 = int2d(Th)((dx(w1)+1.0)*(dx(w1)+1.0) + dy(w1)*dy(w1)) / area;
+A22 = int2d(Th)(dx(w2)*dx(w2) + (dy(w2)+1.0)*(dy(w2)+1.0)) / area;
+A12 = int2d(Th)((dx(w1)+1.0)*dx(w2) + dy(w1)*(dy(w2)+1.0)) / area;
+
+// ===============================
+// OUTPUT RESULTS
+// ===============================
+cout << "======================================" << endl;
+cout << "Domain area = " << area << endl;
+cout << "Mean w1 = " << int2d(Th)(w1)/area << endl;
+cout << "Mean w2 = " << int2d(Th)(w2)/area << endl;
+cout << "======================================" << endl;
+cout << "Homogenized tensor A* = " << endl;
+cout << "[ " << A11 << "  " << A12 << " ]" << endl;
+cout << "[ " << A12 << "  " << A22 << " ]" << endl;
+cout << "======================================" << endl;
+
+// Eigenvalues (for verification)
+real trace = A11 + A22;
+real det = A11*A22 - A12*A12;
+real lambda1 = trace/2.0 + sqrt((trace/2.0)^2 - det);
+real lambda2 = trace/2.0 - sqrt((trace/2.0)^2 - det);
+cout << "Eigenvalues: lambda1 = " << lambda1 << ", lambda2 = " << lambda2 << endl;
+cout << "Determinant: det(A*) = " << det << endl;
+cout << "======================================" << endl;

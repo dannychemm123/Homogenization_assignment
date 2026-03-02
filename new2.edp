@@ -1,0 +1,149 @@
+real r = 0.2;          // hole radius (unit cell)
+int ncell = 40;        // mesh resolution of cell
+int[int] Nvalues = [4,6,8,10,12];
+int nTests = Nvalues.n;
+
+real[int] epsValues(nTests), errL2(nTests), errH1(nTests), errH1corr(nTests);
+
+////////////////////////////////////////////////////////
+// 1. CELL PROBLEMS
+////////////////////////////////////////////////////////
+
+border b1(t=0,1){x=t; y=0;}
+border b2(t=0,1){x=1; y=t;}
+border b3(t=1,0){x=t; y=1;}
+border b4(t=1,0){x=0; y=t;}
+border hole(t=0,2*pi){
+  x = 0.5 + r*cos(t);
+  y = 0.5 + r*sin(t);
+}
+
+mesh ThC = buildmesh(
+    b1(ncell)+b2(ncell)+b3(ncell)+b4(ncell)
+  + hole(-ncell)
+);
+
+fespace Vhc(ThC,P1,periodic=[[1,x],[3,x],[2,y],[4,y]]);
+Vhc w1,w2,v;
+
+problem cell1(w1,v)
+ = int2d(ThC)(dx(w1)*dx(v)+dy(w1)*dy(v))
+ + int2d(ThC)(dx(v));
+
+problem cell2(w2,v)
+ = int2d(ThC)(dx(w2)*dx(v)+dy(w2)*dy(v))
+ + int2d(ThC)(dy(v));
+
+cell1; cell2;
+
+// zero mean
+real meanw1 = int2d(ThC)(w1) / int2d(ThC)(1.0);
+real meanw2 = int2d(ThC)(w2) / int2d(ThC)(1.0);
+w1 = w1 - meanw1;
+w2 = w2 - meanw2;
+
+// save cell plots
+plot(w1, fill=true, value=true, ps="cell_w1.eps");
+plot(w2, fill=true, value=true, ps="cell_w2.eps");
+
+////////////////////////////////////////////////////////
+// 2. HOMOGENIZED TENSOR
+////////////////////////////////////////////////////////
+
+real area = int2d(ThC)(1);
+real A11 = int2d(ThC)((dx(w1)+1)^2 + dy(w1)^2)/area;
+real A22 = int2d(ThC)(dx(w2)^2 + (dy(w2)+1)^2)/area;
+real A12 = int2d(ThC)((dx(w1)+1)*dx(w2) + dy(w1)*(dy(w2)+1))/area;
+real theta = area;
+
+////////////////////////////////////////////////////////
+// 3. HOMOGENIZED PROBLEM
+////////////////////////////////////////////////////////
+
+mesh Th0 = square(100,100);
+fespace Vh0(Th0,P1);
+Vh0 u0,v0;
+func f = 1.0;
+
+problem homog(u0,v0)
+ = int2d(Th0)(
+     A11*dx(u0)*dx(v0)
+   + A22*dy(u0)*dy(v0)
+   + A12*(dx(u0)*dy(v0)+dy(u0)*dx(v0))
+ )
+ - int2d(Th0)(theta*f*v0)
+ + on(1,2,3,4,u0=0);
+
+homog;
+plot(u0, fill=true, value=true, ps="u0_homogenized.eps");
+
+////////////////////////////////////////////////////////
+// 4. ε-PROBLEMS + IMAGE EXPORT
+////////////////////////////////////////////////////////
+
+for(int k=0;k<nTests;k++)
+{
+  int N = Nvalues[k];
+  real eps = 1./N;
+  epsValues[k] = eps;
+
+  mesh Th = square(10*N,10*N);
+  Th = movemesh(Th,[x,y]);
+
+  fespace Vhe(Th,P1);
+  Vhe ueps,veps;
+
+  problem epsProb(ueps,veps)
+   = int2d(Th)(dx(ueps)*dx(veps)+dy(ueps)*dy(veps))
+   - int2d(Th)(f*veps)
+   + on(1,2,3,4,ueps=0);
+
+  epsProb;
+
+  Vhe u0i = u0(x,y);
+  Vhe w1i,w2i;
+
+  for(int i=0;i<Th.nv;i++)
+  {
+    real X = Th(i).x/eps - floor(Th(i).x/eps);
+    real Y = Th(i).y/eps - floor(Th(i).y/eps);
+    w1i[][i] = w1(X,Y);
+    w2i[][i] = w2(X,Y);
+  }
+
+  Vhe ucorr = u0i + eps*(w1i*dx(u0i)+w2i*dy(u0i));
+
+  errL2[k] = sqrt(int2d(Th)((ueps-u0i)^2));
+  errH1[k] = sqrt(int2d(Th)((dx(ueps)-dx(u0i))^2+(dy(ueps)-dy(u0i))^2));
+  errH1corr[k] = sqrt(int2d(Th)((dx(ueps)-dx(ucorr))^2+(dy(ueps)-dy(ucorr))^2));
+
+  // SAVE IMAGES
+  string fname1 = "u_eps_N" + N + ".eps";
+  plot(ueps, fill=true, value=true, ps=fname1);
+  string fname2 = "u_corr_N" + N + ".eps";
+  plot(ucorr, fill=true, value=true, ps=fname2);
+  string fname3 = "error_N" + N + ".eps";
+  plot(ueps - ucorr, fill=true, value=true, ps=fname3);
+
+
+
+//   plot(ueps, fill=true, value=true, ps="u_eps_N"+N+".eps");
+//   plot(ucorr, fill=true, value=true, ps="u_corr_N"+N+".eps");
+//   plot(ueps-ucorr, fill=true, value=true, ps="error_N"+N+".eps");
+}
+
+////////////////////////////////////////////////////////
+// 5. SAVE DATA
+////////////////////////////////////////////////////////
+
+ofstream file("convergence.txt");
+file << "# eps L2 H1 H1corr\n";
+for(int i=0;i<nTests;i++)
+  file << epsValues[i] << " "
+       << errL2[i] << " "
+       << errH1[i] << " "
+       << errH1corr[i] << endl;
+
+////////////////////////////////////////////////////////
+// END
+////////////////////////////////////////////////////////

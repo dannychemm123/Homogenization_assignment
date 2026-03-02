@@ -1,0 +1,262 @@
+// =====================================================
+// HOMOGENIZATION PROJECT - CORRECT IMPLEMENTATION
+// =====================================================
+
+real r = 1.0/6.0;  // delta = 1/6 as in the Julia code
+int ncell = 40;
+
+// Test different N values (division in Julia code)
+int[int] Nvals = [3, 4, 5, 6];
+int nTests = Nvals.n;
+
+// Storage arrays
+real[int] epsVal(nTests);
+real[int] errL2(nTests);
+real[int] errH1(nTests);
+
+// =====================================================
+// 1. CELL PROBLEM - PERIODIC DOMAIN Y*
+// =====================================================
+cout << "======================================" << endl;
+cout << "SOLVING CELL PROBLEM" << endl;
+cout << "======================================" << endl;
+
+border bottom(t=0,1){x=t; y=0; label=1;}
+border right(t=0,1){x=1; y=t; label=2;}
+border top(t=1,0){x=t; y=1; label=3;}
+border left(t=1,0){x=0; y=t; label=4;}
+border hole(t=0,2*pi){
+    x = 0.5 + r*cos(t);
+    y = 0.5 + r*sin(t);
+    label = 5;
+}
+
+mesh ThCell = buildmesh(
+    bottom(ncell) + right(ncell) + top(ncell) + left(ncell)
+    + hole(-ncell)
+);
+
+plot(ThCell, wait=true, cmm="Cell domain Y*");
+
+// Periodic FEM space
+fespace VhCell(ThCell, P1, periodic=[[2,y],[4,y],[1,x],[3,x]]);
+VhCell w1, w2, v;
+
+// Define A(y) - spatially varying coefficient in cell
+func a11cell = 2.0 + sin(2.0*pi*x)*sin(2.0*pi*y);
+func a22cell = 2.0 + sin(2.0*pi*x)*cos(2.0*pi*y);
+
+// Cell problem 1: -div(A(y)[∇w1 + e1]) = 0
+problem cell1(w1, v)
+    = int2d(ThCell)(
+        a11cell * dx(w1)*dx(v) + a22cell * dy(w1)*dy(v)
+    )
+    + int2d(ThCell)(
+        a11cell * dx(v)  // This is A·e1·∇v
+    );
+
+// Cell problem 2: -div(A(y)[∇w2 + e2]) = 0
+problem cell2(w2, v)
+    = int2d(ThCell)(
+        a11cell * dx(w2)*dx(v) + a22cell * dy(w2)*dy(v)
+    )
+    + int2d(ThCell)(
+        a22cell * dy(v)  // This is A·e2·∇v
+    );
+
+cell1; 
+cell2;
+
+// Enforce zero mean
+real meanw1 = int2d(ThCell)(w1) / int2d(ThCell)(1.0);
+real meanw2 = int2d(ThCell)(w2) / int2d(ThCell)(1.0);
+w1 = w1 - meanw1;
+w2 = w2 - meanw2;
+
+plot(w1, wait=1,fill=true, value=true, cmm="Cell corrector w1");
+plot(w2, wait=1,fill=true, value=true, cmm="Cell corrector w2");
+
+// =====================================================
+// 2. COMPUTE HOMOGENIZED MATRIX A*
+// =====================================================
+real area = int2d(ThCell)(1.0);
+real theta = area;  // Volume fraction
+
+// A*_11 = (1/|Y*|) ∫_Y* A11(y)(1 + ∂_x w1)^2 + A22(y)(∂_y w1)^2
+real A11 = int2d(ThCell)(
+    a11cell * (1.0 + dx(w1))*(1.0 + dx(w1)) 
+    + a22cell * dy(w1)*dy(w1)
+) / area;
+
+// A*_22 = (1/|Y*|) ∫_Y* A11(y)(∂_x w2)^2 + A22(y)(1 + ∂_y w2)^2
+real A22 = int2d(ThCell)(
+    a11cell * dx(w2)*dx(w2) 
+    + a22cell * (1.0 + dy(w2))*(1.0 + dy(w2))
+) / area;
+
+// A*_12 = (1/|Y*|) ∫_Y* A11(y)(1 + ∂_x w1)(∂_x w2) + A22(y)(∂_y w1)(1 + ∂_y w2)
+real A12 = int2d(ThCell)(
+    a11cell * (1.0 + dx(w1))*dx(w2) 
+    + a22cell * dy(w1)*(1.0 + dy(w2))
+) / area;
+
+real A21 = int2d(ThCell)(
+    a11cell * dx(w1)*(1.0 + dx(w2)) 
+    + a22cell * (1.0 + dy(w1))*dy(w2)
+) / area;
+
+cout << "======================================" << endl;
+cout << "Homogenized tensor A* = " << endl;
+cout << "[ " << A11 << "  " << A12 << " ]" << endl;
+cout << "[ " << A21 << "  " << A22 << " ]" << endl;
+cout << "Volume fraction theta = " << theta << endl;
+cout << "======================================" << endl;
+
+// =====================================================
+// 3. SOLVE HOMOGENIZED PROBLEM
+// =====================================================
+cout << "SOLVING HOMOGENIZED PROBLEM" << endl;
+cout << "======================================" << endl;
+
+mesh Th0 = square(100, 100);
+fespace Vh0(Th0, P1);
+Vh0 u0, v0;
+
+// f0(x) = sin(2πx1) (the non-oscillatory part)
+func f0 = sin(2.0*pi*x);
+
+problem homog(u0, v0)
+    = int2d(Th0)(
+        A11*dx(u0)*dx(v0)
+        + A22*dy(u0)*dy(v0)
+        + A12*dx(u0)*dy(v0)
+        + A21*dy(u0)*dx(v0)
+        + theta*u0*v0
+    )
+    - int2d(Th0)(theta*f0*v0)
+    + on(1,2,3,4, u0=0);
+
+homog;
+
+plot(u0, wait=1,fill=true, value=true, cmm="Homogenized solution u0");
+
+// =====================================================
+// 4. CONVERGENCE STUDY - EPSILON PROBLEMS
+// =====================================================
+cout << "======================================" << endl;
+cout << "CONVERGENCE STUDY" << endl;
+cout << "======================================" << endl;
+
+for(int k=0; k<nTests; k++)
+{
+    int N = Nvals[k];
+    real eps = 1.0/N;
+    epsVal[k] = eps;
+    
+    cout << "--------------------------------------" << endl;
+    cout << "Test " << (k+1) << "/" << nTests << endl;
+    cout << "N = " << N << ", eps = " << eps << endl;
+    
+    // Build perforated domain Omega_epsilon
+    mesh Th;
+    for(int i=0; i<N; i++)
+    for(int j=0; j<N; j++)
+    {
+        real x0 = i*eps, y0 = j*eps;
+        
+        border B1(t=0,1){x=x0+eps*t; y=y0; label=10;}
+        border B2(t=0,1){x=x0+eps; y=y0+eps*t; label=10;}
+        border B3(t=1,0){x=x0+eps*t; y=y0+eps; label=10;}
+        border B4(t=1,0){x=x0; y=y0+eps*t; label=10;}
+        border H(t=0,2*pi){
+            x = x0 + eps/2 + r*eps*cos(t);
+            y = y0 + eps/2 + r*eps*sin(t);
+            label = 20;
+        }
+        
+        mesh Tloc = buildmesh(B1(8)+B2(8)+B3(8)+B4(8)+H(-8));
+        
+        if(i==0 && j==0) {
+            Th = Tloc;
+        } else {
+            Th = Th + Tloc;
+        }
+    }
+    
+    cout << "Mesh: " << Th.nt << " triangles" << endl;
+    
+    fespace VhE(Th, P1);
+    VhE ue, ve;
+    
+    // Define A_epsilon(x, x/eps) - oscillatory coefficient
+    func a11eps = 2.0 + sin(2.0*pi*x/eps)*sin(2.0*pi*y/eps);
+    func a22eps = 2.0 + sin(2.0*pi*x/eps)*cos(2.0*pi*y/eps);
+    
+    // Define f_epsilon(x) - oscillatory forcing
+    func feps = sin(2.0*pi*x) + eps*sin(2.0*pi*x/eps)*cos(2.0*pi*y/eps);
+    
+    // Epsilon problem: -div(A_eps ∇u_eps) + u_eps = f_eps
+    problem epsProb(ue, ve)
+        = int2d(Th)(
+            a11eps*dx(ue)*dx(ve)
+            + a22eps*dy(ue)*dy(ve)
+            + ue*ve
+        )
+        - int2d(Th)(feps*ve)
+        + on(10, ue=0);
+    
+    epsProb;
+    
+    // Interpolate homogenized solution to epsilon mesh
+    VhE u0i = u0(x, y);
+    
+    // Compute errors
+    errL2[k] = sqrt(int2d(Th)((ue - u0i)^2));
+    errH1[k] = sqrt(int2d(Th)(
+        (ue - u0i)^2
+        + (dx(ue) - dx(u0i))^2
+        + (dy(ue) - dy(u0i))^2
+    ));
+    
+    cout << "L2 error = " << errL2[k] << endl;
+    cout << "H1 error = " << errH1[k] << endl;
+    
+    // Plot for comparison
+    if(k == 0 || k == nTests-1) {
+        plot(ue, wait=1, fill=true, value=true, cmm="u_eps, eps="+eps);
+    }
+}
+
+// =====================================================
+// 5. CONVERGENCE RATES
+// =====================================================
+cout << "======================================" << endl;
+cout << "CONVERGENCE RATES" << endl;
+cout << "======================================" << endl;
+
+for(int k=1; k<nTests; k++)
+{
+    real rateL2 = log(errL2[k]/errL2[k-1]) / log(epsVal[k]/epsVal[k-1]);
+    real rateH1 = log(errH1[k]/errH1[k-1]) / log(epsVal[k]/epsVal[k-1]);
+    
+    cout << "From eps=" << epsVal[k-1] << " to " << epsVal[k] << endl;
+    cout << "  L2 rate = " << rateL2 << " (expect ~1-2)" << endl;
+    cout << "  H1 rate = " << rateH1 << " (expect ~1)" << endl;
+}
+
+// =====================================================
+// 6. SAVE DATA
+// =====================================================
+{
+    ofstream file("convergence_data.txt");
+    file << "# N  eps  errL2  errH1" << endl;
+    for(int k=0; k<nTests; k++)
+    {
+        file << Nvals[k] << " " << epsVal[k] << " " 
+             << errL2[k] << " " << errH1[k] << endl;
+    }
+}
+
+cout << "======================================" << endl;
+cout << "Data saved to convergence_data.txt" << endl;
+cout << "======================================" << endl;

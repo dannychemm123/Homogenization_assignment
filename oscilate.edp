@@ -1,0 +1,82 @@
+// ===============================
+// EPSILON PROBLEM
+// ===============================
+real r = 0.2;          // hole radius (relative)
+int N = 8;             // number of cells per direction
+real eps = 1.0 / N;    // epsilon
+
+int ncell = 20;        // mesh resolution per cell
+
+// ===============================
+// BUILD DOMAIN WITH HOLES
+// ===============================
+mesh Th;
+
+// Loop over periodic cells
+for (int i = 0; i < N; i++)
+for (int j = 0; j < N; j++)
+{
+    real x0 = i * eps;
+    real y0 = j * eps;
+
+    border b1(t=0,1){
+        x = x0 + eps*t; y = y0; label=1;
+    }
+    border b2(t=0,1){
+        x = x0 + eps; y = y0 + eps*t; label=1;
+    }
+    border b3(t=1,0){
+        x = x0 + eps*t; y = y0 + eps; label=1;
+    }
+    border b4(t=1,0){
+        x = x0; y = y0 + eps*t; label=1;
+    }
+
+    border hole(t=0,2*pi){
+        x = x0 + eps/2 + r*eps*cos(t);
+        y = y0 + eps/2 + r*eps*sin(t);
+        label = 2;
+    }
+
+    Th = Th + buildmesh(
+        b1(ncell) + b2(ncell) + b3(ncell) + b4(ncell)
+        + hole(-ncell)
+    );
+}
+
+// ===============================
+// FINITE ELEMENT SPACE
+// ===============================
+fespace Vh(Th, P1);
+Vh ueps, v;
+
+// ===============================
+// RIGHT-HAND SIDE
+// ===============================
+func f = 1.0;
+
+// ===============================
+// EPSILON PROBLEM
+// ===============================
+problem epsProblem(ueps, v)
+    = int2d(Th)(
+          dx(ueps)*dx(v)
+        + dy(ueps)*dy(v)
+        + ueps*v
+      )
+    - int2d(Th)(
+          f*v
+      )
+    + on(1, ueps=0);   // outer boundary
+
+// ===============================
+// SOLVE
+// ===============================
+epsProblem;
+
+// ===============================
+// PLOT
+// ===============================
+plot(ueps, fill=true, value=true,
+     cmm="epsilon solution, eps = " + eps,
+     wait=true);

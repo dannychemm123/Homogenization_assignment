@@ -1,0 +1,161 @@
+// =====================================================
+// PARAMETERS
+// =====================================================
+real r = 0.2;        // hole radius in unit cell
+int ncell = 40;      // mesh resolution in cell
+int N = 8;           // number of cells per direction
+real eps = 1.0/N;    // epsilon
+
+// =====================================================
+// 1. CELL PROBLEM (UNIT CELL)
+// =====================================================
+border bottom(t=0,1){x=t; y=0; label=1;}
+border right(t=0,1){x=1; y=t; label=2;}
+border top(t=1,0){x=t; y=1; label=3;}
+border left(t=1,0){x=0; y=t; label=4;}
+border hole(t=0,2*pi){
+    x = 0.5 + r*cos(t);
+    y = 0.5 + r*sin(t);
+    label = 5;
+}
+
+mesh ThCell = buildmesh(
+    bottom(ncell) + right(ncell) + top(ncell) + left(ncell)
+  + hole(-ncell)
+);
+
+// Periodic FEM space
+fespace VhCell(ThCell, P1, periodic=[[2,y],[4,y],[1,x],[3,x]]);
+VhCell w1, w2, v;
+
+// Cell problems
+problem cell1(w1, v)
+  = int2d(ThCell)(dx(w1)*dx(v) + dy(w1)*dy(v))
+  + int2d(ThCell)(dx(v));
+
+problem cell2(w2, v)
+  = int2d(ThCell)(dx(w2)*dx(v) + dy(w2)*dy(v))
+  + int2d(ThCell)(dy(v));
+
+cell1; cell2;
+
+
+// Enforce zero mean (optional, for uniqueness)
+real meanw1 = int2d(ThCell)(w1) / int2d(ThCell)(1.0);
+real meanw2 = int2d(ThCell)(w2) / int2d(ThCell)(1.0);
+w1 = w1 - meanw1;
+w2 = w2 - meanw2;
+// =====================================================
+// 2. HOMOGENIZED MATRIX A*
+// =====================================================
+real area = int2d(ThCell)(1.0);
+real A11 = int2d(ThCell)((dx(w1)+1)^2 + dy(w1)^2)/area;
+real A22 = int2d(ThCell)(dx(w2)^2 + (dy(w2)+1)^2)/area;
+real A12 = int2d(ThCell)((dx(w1)+1)*dx(w2) + dy(w1)*(dy(w2)+1))/area;
+
+cout << "A* = " << endl;
+cout << "[ " << A11 << "  " << A12 << " ]" << endl;
+cout << "[ " << A12 << "  " << A22 << " ]" << endl;
+
+// =====================================================
+// 3. HOMOGENIZED PROBLEM
+// =====================================================
+mesh Th0 = square(50,50);
+fespace Vh0(Th0, P1);
+Vh0 u0, v0;
+
+func f = 1.0;
+
+problem homog(u0, v0)
+  = int2d(Th0)(
+        A11*dx(u0)*dx(v0)
+      + A22*dy(u0)*dy(v0)
+      + A12*(dx(u0)*dy(v0) + dy(u0)*dx(v0))
+      + u0*v0
+    )
+  - int2d(Th0)(f*v0)
+  + on(1,2,3,4, u0=0);
+
+homog;
+
+// =====================================================
+// 4. EPSILON PROBLEM (DOMAIN WITH HOLES)
+// =====================================================
+mesh Th;
+
+for(int i=0;i<N;i++)
+for(int j=0;j<N;j++)
+{
+    real x0=i*eps, y0=j*eps;
+
+    border b1(t=0,1){x=x0+eps*t; y=y0; label=10;}
+    border b2(t=0,1){x=x0+eps; y=y0+eps*t; label=10;}
+    border b3(t=1,0){x=x0+eps*t; y=y0+eps; label=10;}
+    border b4(t=1,0){x=x0; y=y0+eps*t; label=10;}
+
+    border h(t=0,2*pi){
+        x=x0+eps/2+r*eps*cos(t);
+        y=y0+eps/2+r*eps*sin(t);
+        label=20;
+    }
+
+    Th += buildmesh(b1(ncell/2)+b2(ncell/2)+b3(ncell/2)+b4(ncell/2)
+                    +h(-ncell/2));
+}
+
+fespace Vheps(Th, P1);
+Vheps ueps, v;
+
+problem epsProb(ueps, v)
+  = int2d(Th)(
+        dx(ueps)*dx(v)
+      + dy(ueps)*dy(v)
+      + ueps*v
+    )
+  - int2d(Th)(f*v)
+  + on(10, ueps=0);
+
+epsProb;
+
+// =====================================================
+// 5. CORRECTOR
+// =====================================================
+func real w1per(real x, real y)
+{
+    real X = x/eps - floor(x/eps);
+    real Y = y/eps - floor(y/eps);
+    return w1(X,Y);
+}
+
+func real w2per(real x, real y)
+{
+    real X = x/eps - floor(x/eps);
+    real Y = y/eps - floor(y/eps);
+    return w2(X,Y);
+}
+
+Vheps ucorr =
+    u0
+  + eps*( w1per(x,y)*dx(u0) + w2per(x,y)*dy(u0) );
+
+// =====================================================
+// 6. ERROR COMPUTATION (CORRECTOR ESTIMATE)
+// =====================================================
+real E0 = sqrt(int2d(Th)((ueps-u0)^2));
+real E1 = sqrt(int2d(Th)(
+          (ueps-ucorr)^2
+        + (dx(ueps)-dx(ucorr))^2
+        + (dy(ueps)-dy(ucorr))^2
+));
+
+cout << "==================================" << endl;
+cout << "eps = " << eps << endl;
+cout << "||u^eps - u0||_L2 = " << E0 << endl;
+cout << "||u^eps - u_corr||_H1 = " << E1 << endl;
+cout << "==================================" << endl;
+
+// =====================================================
+// OPTIONAL PLOTS
+// =====================================================
+plot(ueps, fill=true, value=true, cmm="u^eps", wait=true);
+plot(ucorr, fill=true, value=true, cmm="u_corr", wait=true);

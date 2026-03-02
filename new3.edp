@@ -1,0 +1,296 @@
+real r = 0.2;        
+int ncell = 40;      
+
+// Array of N values to test
+int[int] Nvalues = [4, 6, 8, 10, 12, 18];
+int nTests = Nvalues.n;
+
+// Arrays to store results
+real[int] epsValues(nTests);
+real[int] errorL2(nTests);
+real[int] errorH1(nTests);
+real[int] errorH1corr(nTests);
+
+// =====================================================
+// 1. SOLVE CELL PROBLEM ONCE
+// =====================================================
+cout << "======================================" << endl;
+cout << "SOLVING CELL PROBLEM" << endl;
+cout << "======================================" << endl;
+
+border bottom(t=0,1){x=t; y=0; label=1;}
+border right(t=0,1){x=1; y=t; label=2;}
+border top(t=1,0){x=t; y=1; label=3;}
+border left(t=1,0){x=0; y=t; label=4;}
+border hole(t=0,2*pi){
+    x = 0.5 + r*cos(t);
+    y = 0.5 + r*sin(t);
+    label = 5;
+}
+
+mesh ThCell = buildmesh(
+    bottom(ncell) + right(ncell) + top(ncell) + left(ncell)
+    + hole(-ncell)
+);
+
+fespace VhCell(ThCell, P1, periodic=[[2,y],[4,y],[1,x],[3,x]]);
+VhCell w1, w2, v;
+
+problem cell1(w1, v)
+    = int2d(ThCell)(dx(w1)*dx(v) + dy(w1)*dy(v))
+    + int2d(ThCell)(dx(v));
+
+problem cell2(w2, v)
+    = int2d(ThCell)(dx(w2)*dx(v) + dy(w2)*dy(v))
+    + int2d(ThCell)(dy(v));
+
+cell1; 
+cell2;
+
+real meanw1 = int2d(ThCell)(w1) / int2d(ThCell)(1.0);
+real meanw2 = int2d(ThCell)(w2) / int2d(ThCell)(1.0);
+w1 = w1 - meanw1;
+w2 = w2 - meanw2;
+
+// Save cell problem plots
+plot(ThCell, ps="cell_mesh.eps", cmm="Cell mesh");
+plot(w1, fill=true, ps="cell_w1.eps", value=true, cmm="Cell corrector w1");
+plot(w2, fill=true, ps="cell_w2.eps", value=true, cmm="Cell corrector w2");
+
+// =====================================================
+// 2. COMPUTE HOMOGENIZED MATRIX A*
+// =====================================================
+real area = int2d(ThCell)(1.0);
+real theta = area;
+
+real A11 = int2d(ThCell)((dx(w1)+1)^2 + dy(w1)^2)/area;
+real A22 = int2d(ThCell)(dx(w2)^2 + (dy(w2)+1)^2)/area;
+real A12 = int2d(ThCell)((dx(w1)+1)*dx(w2) + dy(w1)*(dy(w2)+1))/area;
+
+cout << "Homogenized tensor A* = " << endl;
+cout << "[ " << A11 << "  " << A12 << " ]" << endl;
+cout << "[ " << A12 << "  " << A22 << " ]" << endl;
+cout << "Volume fraction theta = " << theta << endl;
+
+// =====================================================
+// 3. SOLVE HOMOGENIZED PROBLEM ONCE
+// =====================================================
+cout << "======================================" << endl;
+cout << "SOLVING HOMOGENIZED PROBLEM" << endl;
+cout << "======================================" << endl;
+
+mesh Th0 = square(100,100);
+fespace Vh0(Th0, P1);
+Vh0 u0, v0;
+
+func f = 1.0;
+
+problem homog(u0, v0)
+    = int2d(Th0)(
+        A11*dx(u0)*dx(v0)
+        + A22*dy(u0)*dy(v0)
+        + A12*(dx(u0)*dy(v0) + dy(u0)*dx(v0))
+    )
+    - int2d(Th0)(theta*f*v0)
+    + on(1,2,3,4, u0=0);
+
+homog;
+
+// Save homogenized problem plots
+plot(Th0, ps="homogenized_mesh.eps", cmm="Homogenized mesh");
+plot(u0, fill=true, ps="homogenized_solution.eps", value=true, cmm="Homogenized solution u0");
+
+// =====================================================
+// 4. LOOP OVER DIFFERENT VALUES OF N (epsilon)
+// =====================================================
+cout << "======================================" << endl;
+cout << "CONVERGENCE STUDY" << endl;
+cout << "======================================" << endl;
+
+for(int test=0; test<nTests; test++)
+{
+    int N = Nvalues[test];
+    real eps = 1.0/N;
+    epsValues[test] = eps;
+    
+    cout << "--------------------------------------" << endl;
+    cout << "Test " << (test+1) << "/" << nTests << ": N = " << N << ", eps = " << eps << endl;
+    
+    // Mesh resolution: KEEP IT PROPORTIONAL TO MAINTAIN ACCURACY
+    int nptsPerCell = max(10, int(ncell/2));  // At least 10 points per cell edge
+    
+    // Build the full perforated domain
+    // We need to define borders dynamically, so we build cell by cell
+    
+    // Start with first cell
+    {
+        real x0 = 0, y0 = 0;
+        border b1(t=0,1){x=x0+eps*t; y=y0; label=10;}
+        border b2(t=0,1){x=x0+eps; y=y0+eps*t; label=10;}
+        border b3(t=1,0){x=x0+eps*t; y=y0+eps; label=10;}
+        border b4(t=1,0){x=x0; y=y0+eps*t; label=10;}
+        border h(t=0,2*pi){
+            x = x0+eps/2 + r*eps*cos(t);
+            y = y0+eps/2 + r*eps*sin(t);
+            label = 20;
+        }
+        mesh Th = buildmesh(b1(nptsPerCell)+b2(nptsPerCell)+b3(nptsPerCell)+b4(nptsPerCell)+h(-nptsPerCell));
+        
+        // Add remaining cells
+        for(int i=0; i<N; i++)
+        for(int j=0; j<N; j++)
+        {
+            if(i==0 && j==0) continue;
+            
+            x0 = i*eps;
+            y0 = j*eps;
+            
+            border b1loc(t=0,1){x=x0+eps*t; y=y0; label=10;}
+            border b2loc(t=0,1){x=x0+eps; y=y0+eps*t; label=10;}
+            border b3loc(t=1,0){x=x0+eps*t; y=y0+eps; label=10;}
+            border b4loc(t=1,0){x=x0; y=y0+eps*t; label=10;}
+            border hloc(t=0,2*pi){
+                x = x0+eps/2 + r*eps*cos(t);
+                y = y0+eps/2 + r*eps*sin(t);
+                label = 20;
+            }
+            
+            mesh Thloc = buildmesh(b1loc(nptsPerCell)+b2loc(nptsPerCell)+b3loc(nptsPerCell)+b4loc(nptsPerCell)+hloc(-nptsPerCell));
+            Th = Th + Thloc;
+        }
+        
+        cout << "Mesh built: " << Th.nt << " triangles" << endl;
+        
+        // Solve epsilon problem
+        fespace Vheps(Th, P1);
+        Vheps ueps, veps;
+
+        problem epsProb(ueps, veps)
+            = int2d(Th)(
+                dx(ueps)*dx(veps)
+                + dy(ueps)*dy(veps)
+            )
+            - int2d(Th)(f*veps)
+            + on(10, ueps=0);
+
+        epsProb;
+        
+        // Interpolate u0 to epsilon mesh
+        Vheps u0interp = u0(x, y);
+        
+        // Build corrector with periodic cell functions
+        Vheps w1interp, w2interp;
+        {
+            // Compute periodic coordinates
+            for(int i=0; i<Th.nv; i++)
+            {
+                real xx = Th(i).x;
+                real yy = Th(i).y;
+                real X = xx/eps - floor(xx/eps);
+                real Y = yy/eps - floor(yy/eps);
+                w1interp[][i] = w1(X, Y);
+                w2interp[][i] = w2(X, Y);
+            }
+        }
+        
+        Vheps ucorr = u0interp + eps*(w1interp*dx(u0interp) + w2interp*dy(u0interp));
+        
+        // Compute errors
+        errorL2[test] = sqrt(int2d(Th)((ueps-u0interp)^2));
+        errorH1[test] = sqrt(int2d(Th)(
+                    (ueps-u0interp)^2
+                    + (dx(ueps)-dx(u0interp))^2
+                    + (dy(ueps)-dy(u0interp))^2
+        ));
+        errorH1corr[test] = sqrt(int2d(Th)(
+                    (ueps-ucorr)^2
+                    + (dx(ueps)-dx(ucorr))^2
+                    + (dy(ueps)-dy(ucorr))^2
+        ));
+        
+        cout << "||u_eps - u0||_L2 = " << errorL2[test] << endl;
+        cout << "||u_eps - u0||_H1 = " << errorH1[test] << endl;
+        cout << "||u_eps - u_corr||_H1 = " << errorH1corr[test] << endl;
+        
+        // Save plots for each N value
+        plot(ueps, fill=true, ps="epsilon_solution_N" + N + ".eps", value=true, cmm="Epsilon solution N=" + N);
+        plot(ucorr, fill=true, ps="corrector_solution_N" + N + ".eps", value=true, cmm="Corrector solution N=" + N);
+        Vheps diff = ueps - ucorr;
+        plot(diff, fill=true, ps="error_N" + N + ".eps", value=true, cmm="Error N=" + N);
+    }
+}
+
+// =====================================================
+// 5. DISPLAY RESULTS TABLE
+// =====================================================
+cout << "======================================" << endl;
+cout << "CONVERGENCE TABLE" << endl;
+cout << "======================================" << endl;
+cout << "  N  |  epsilon  |  L2 error  |  H1 error  | H1 corr error" << endl;
+cout << "--------------------------------------------------------------" << endl;
+for(int i=0; i<nTests; i++)
+{
+    cout << " " << Nvalues[i] << "   | " << epsValues[i] 
+         << " | " << errorL2[i] 
+         << " | " << errorH1[i] 
+         << " | " << errorH1corr[i] << endl;
+}
+
+// Compute convergence rates
+cout << "======================================" << endl;
+cout << "CONVERGENCE RATES" << endl;
+cout << "======================================" << endl;
+for(int i=1; i<nTests; i++)
+{
+    real rateL2 = log(errorL2[i]/errorL2[i-1]) / log(epsValues[i]/epsValues[i-1]);
+    real rateH1 = log(errorH1[i]/errorH1[i-1]) / log(epsValues[i]/epsValues[i-1]);
+    real rateH1corr = log(errorH1corr[i]/errorH1corr[i-1]) / log(epsValues[i]/epsValues[i-1]);
+    
+    cout << "From N=" << Nvalues[i-1] << " to N=" << Nvalues[i] << ":" << endl;
+    cout << "  L2 rate = " << rateL2 << " (expect ~1)" << endl;
+    cout << "  H1 rate = " << rateH1 << " (expect ~1)" << endl;
+    cout << "  H1 corr rate = " << rateH1corr << " (expect ~2)" << endl;
+}
+
+// =====================================================
+// 6. SAVE DATA
+// =====================================================
+{
+    ofstream file("convergence_data.txt");
+    file << "# eps  errorL2  errorH1  errorH1corr" << endl;
+    for(int i=0; i<nTests; i++)
+    {
+        file << epsValues[i] << " " << errorL2[i] << " " 
+             << errorH1[i] << " " << errorH1corr[i] << endl;
+    }
+}
+
+cout << "Data saved to convergence_data.txt" << endl;
+
+// =====================================================
+// 7. CONVERT EPS TO PNG
+// =====================================================
+cout << "======================================" << endl;
+cout << "CONVERTING EPS TO PNG" << endl;
+cout << "======================================" << endl;
+
+// Convert cell problem plots
+exec("convert -density 300 cell_mesh.eps cell_mesh.png");
+exec("convert -density 300 cell_w1.eps cell_w1.png");
+exec("convert -density 300 cell_w2.eps cell_w2.png");
+
+// Convert homogenized problem plots
+exec("convert -density 300 homogenized_mesh.eps homogenized_mesh.png");
+exec("convert -density 300 homogenized_solution.eps homogenized_solution.png");
+
+// Convert epsilon problem plots for each N
+for(int i=0; i<nTests; i++)
+{
+    int N = Nvalues[i];
+    exec("convert -density 300 epsilon_solution_N" + N + ".eps epsilon_solution_N" + N + ".png");
+    exec("convert -density 300 corrector_solution_N" + N + ".eps corrector_solution_N" + N + ".png");
+    exec("convert -density 300 error_N" + N + ".eps error_N" + N + ".png");
+}
+
+cout << "All plots converted to PNG format" << endl;
+cout << "======================================"  << endl;
